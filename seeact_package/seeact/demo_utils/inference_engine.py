@@ -53,6 +53,11 @@ def encode_image(image_path):
 
 def engine_factory(api_key=None, model=None, **kwargs):
     model = model.lower()
+    if kwargs.get("grounding_model_config") is not None:
+        grounding_model_config = kwargs.pop("grounding_model_config")
+        default_model_config = {'api_key': api_key, 'model': model}
+        default_model_config.update(kwargs)
+        return BiOpenAIEngine(default_model_config=default_model_config, grounding_model_config=grounding_model_config)
     if model in ["gpt-4-vision-preview", "gpt-4-turbo", "gpt-4o", "gpt-4o-mini"]:
         if api_key and api_key != EMPTY_API_KEY:
             os.environ["OPENAI_API_KEY"] = api_key
@@ -268,6 +273,103 @@ class OpenAIEngine(Engine):
             **kwargs,
         )
         return [choice["message"]["content"] for choice in response.choices][0]
+    
+
+from openai import OpenAI
+class BiOpenAIEngine(Engine):
+    def __init__(self, default_model_config, grounding_model_config, **kwargs) -> None:
+        # super().__init__(stop, rate_limit, model, temperature, **kwargs)
+        self.model_names = {
+            "grounding": grounding_model_config.pop("model"),
+            "default": default_model_config.pop("model"),
+        }
+        self.temperature = default_model_config.pop("temperature", 0.0)
+        default_model_config.pop("rate_limit", None)
+        grounding_model_config.pop("rate_limit", None)
+        self.clients: dict[str, OpenAI] = {
+            "grounding": OpenAI(**grounding_model_config),
+            "default": OpenAI(**default_model_config),
+        }
+
+    def _init_one_client(self, model_config):
+        return 
+
+    def generate(self, prompt: list = None, max_new_tokens=4096, temperature=None, model=None, image_path=None,
+                 ouput_0=None, turn_number=0, **kwargs):
+        
+        # prompt0, prompt1, prompt2 = prompt
+        client = self.clients["default"]
+        model_name = self.model_names["default"]
+        base64_image = encode_image(image_path)
+
+        kwargs.update({
+            "max_tokens": max_new_tokens if max_new_tokens else 4096,
+            "temperature": temperature if temperature else self.temperature,
+        })
+
+        if turn_number == 0:
+            # Assume one turn dialogue
+            prompt0, prompt1 = prompt
+            prompt_input = [
+                {"role": "assistant", "content": prompt0},
+                {"role": "user", "content": [
+                    {"type": "text", "text": prompt1},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}", "detail": "high"}}
+                ]},
+            ]
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=prompt_input,
+                **kwargs,
+            )
+        elif turn_number == 1:
+            prompt0, prompt1, prompt2 = prompt
+            prompt_input = [
+                {"role": "assistant", "content": prompt0},
+                # {"role": "user", "content": prompt1, "images": [f"{base64_image}"]},
+                {
+                    "role": "user", "content": [
+                        {"type": "text", "text": prompt1},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}", "detail": "high"}}
+                    ]
+                },
+                {"role": "assistant", "content": f"\n\n{ouput_0}"},
+                {"role": "user", "content": prompt2}, 
+            ]
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=prompt_input,
+                **kwargs,
+            )
+        return response.choices[0].message.content
+    
+    def grounding_generate(self, prompt: list = str, image_path=None, max_new_tokens=4096, temperature=None):
+        client = self.clients["grounding"]
+        model_name = self.model_names["grounding"]
+        base64_image = encode_image(image_path)
+        kwargs = {
+            "max_tokens": max_new_tokens if max_new_tokens else 4096,
+            "temperature": temperature if temperature else self.temperature,
+        }
+        messages = [{
+            "role": "user",
+            "content": [
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{base64_image}", "detail": "high"}
+                },
+                {
+                    "type": "text",
+                    "text": prompt
+                }
+            ]
+        }]
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=messages,
+            **kwargs,
+        )
+        return response.choices[0].message.content
 
 
 class OpenaiEngine_MindAct(Engine):

@@ -18,6 +18,7 @@ import logging
 import os
 import random
 import traceback
+import re
 from datetime import datetime
 from os.path import dirname
 
@@ -64,7 +65,8 @@ class SeeActAgent:
                  },
                  rate_limit=-1,
                  model="gpt-4o",
-                 temperature=0.9
+                 temperature=0.9,
+                 grounding_model_config=None,
                  ):
 
         try:
@@ -149,13 +151,15 @@ class SeeActAgent:
         # # Redirect primary logger messages to dev_logger as well
         # for handler in self.logger.handlers:
         #     self.dev_logger.addHandler(handler)
-
-        self.engine = engine_factory(**self.config['openai'])
+        if self.config["agent"]["grounding_strategy"] == "pixel_2_stage" and grounding_model_config is None:
+            grounding_model_config = self.config["openai"]
+        self.engine = engine_factory(grounding_model_config=grounding_model_config, **self.config['openai'])
         self.taken_actions = []
 
         if self.config["agent"]["grounding_strategy"] == "pixel_2_stage":
             self.prompts = self._initialize_prompts_pure_vision()
-        self.prompts = self._initialize_prompts()
+        else:
+            self.prompts = self._initialize_prompts()
         self.time_step = 0
         self.valid_op = 0
         self.continuous_no_op = 0
@@ -291,7 +295,18 @@ To be successful, it is important to follow the following rules:
                 
     VALUE: Provide additional input based on ACTION. (If it doesn't involve a value, write "None"            
                 
-    '''}
+    ''',
+    "coordinate_prompt": f"""
+Your task is to help the user identify the precise coordinates (x, y) of a specific area/element/object on the screen based on a description.
+
+- Your response should aim to point to the center or a representative point within the described area/element/object as accurately as possible.
+- If the description is unclear or ambiguous, infer the most relevant area or element based on its likely context or purpose.
+- Your answer should be a single string (x, y) corresponding to the point of the interest.
+
+Description: {{description}}
+
+Answer:""",
+        }
 
     def update_action_space(self, new_actions):
         """Update the action space and regenerate the action_format prompt."""
@@ -581,7 +596,13 @@ To be successful, it is important to follow the following rules:
 
         # self.dev_logger.info(new_action)
         return new_action
-
+    
+    def _extract_coordinates(self, text):
+        match = re.search(r'(\d+)[^\d]+(\d+)', text)
+        if match:
+            return {"x": int(match.group(1)), "y": int(match.group(2))}
+        return None
+    
     async def predict(self):
 
         """
@@ -662,7 +683,7 @@ To be successful, it is important to follow the following rules:
 
         # Capture a screenshot for the current state of the webpage, if required by the model
         screenshot_path = os.path.join(self.main_path, 'screenshots', f'screen_{self.time_step}.png')
-        self.logger.info(screenshot_path)
+        self.logger.info(f"Saving screenshot to: {screenshot_path}")
         try:
             await self.page.screenshot(path=screenshot_path)
         except Exception as e:
@@ -705,11 +726,17 @@ To be successful, it is important to follow the following rules:
             self.logger.debug(f"Value: {pred_value}")
 
             # Call a GUI visual grounding model to get the pixel coordinates. For example, UGround, CogAgent, SeeClick.
-            pred_coordinates = None
+            text_prompt_for_grouding = self.prompts["coordinate_prompt"].format(description=pred_element_label)
+            grounding_response = self.engine.grounding_generate(
+                prompt=text_prompt_for_grouding,
+                image_path=self.screenshot_path,
+            )
+            pred_coordinates = self._extract_coordinates(grounding_response)
 
             prediction = {"action_generation": output0, "action_grounding": output, "element": None,
                           "action": pred_action, "value": pred_value, "coordinates": pred_coordinates,
                           "description": pred_element_label}
+            
 
         else:
             choice_text = f"Action Grounding ➡️" + "\n" + options
@@ -783,7 +810,7 @@ To be successful, it is important to follow the following rules:
                 # self.dev_logger.info
                 self.logger.info("DEBUG: WHAT IS PRED ACTION???:" + pred_action)
                 # self.dev_logger.info("DEBUG WHAT IS self.no_element_op???:"+ self.no_element_op)
-                pred_action = "NONE"
+                # pred_action = "NONE"
             new_action = await self.perform_action(pred_element, pred_action, pred_value, pred_coordinate,pred_element_description)
             self.taken_actions.append(new_action)
             if pred_action != "NONE":
