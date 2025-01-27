@@ -56,8 +56,9 @@ def engine_factory(api_key=None, model=None, **kwargs):
     if kwargs.get("grounding_model_config") is not None:
         grounding_model_config = kwargs.pop("grounding_model_config")
         default_model_config = {'api_key': api_key, 'model': model}
+        logger = kwargs.pop("logger")
         default_model_config.update(kwargs)
-        return BiOpenAIEngine(default_model_config=default_model_config, grounding_model_config=grounding_model_config)
+        return BiOpenAIEngine(default_model_config=default_model_config, grounding_model_config=grounding_model_config, logger=logger, **kwargs)
     if model in ["gpt-4-vision-preview", "gpt-4-turbo", "gpt-4o", "gpt-4o-mini"]:
         if api_key and api_key != EMPTY_API_KEY:
             os.environ["OPENAI_API_KEY"] = api_key
@@ -276,9 +277,12 @@ class OpenAIEngine(Engine):
     
 
 from openai import OpenAI
+from PIL import Image, ImageDraw
+import re
 class BiOpenAIEngine(Engine):
-    def __init__(self, default_model_config, grounding_model_config, **kwargs) -> None:
+    def __init__(self, default_model_config, grounding_model_config, logger, **kwargs) -> None:
         # super().__init__(stop, rate_limit, model, temperature, **kwargs)
+        self.logger = logger
         self.model_names = {
             "grounding": grounding_model_config.pop("model"),
             "default": default_model_config.pop("model"),
@@ -343,9 +347,17 @@ class BiOpenAIEngine(Engine):
             )
         return response.choices[0].message.content
     
+    def _extract_coordinates(self, text):
+        match = re.search(r'(\d+)[^\d]+(\d+)', text)
+        if match:
+            return {"x": int(match.group(1)), "y": int(match.group(2))}
+        return None
+    
     def grounding_generate(self, prompt: list = str, image_path=None, max_new_tokens=4096, temperature=None):
         client = self.clients["grounding"]
         model_name = self.model_names["grounding"]
+        image = Image.open(image_path)
+        image_width, image_height = image.size
         base64_image = encode_image(image_path)
         kwargs = {
             "max_tokens": max_new_tokens if max_new_tokens else 4096,
@@ -369,8 +381,33 @@ class BiOpenAIEngine(Engine):
             messages=messages,
             **kwargs,
         )
-        return response.choices[0].message.content
 
+        # Open the screenshot image
+        coordinates_text = response.choices[0].message.content
+
+        coordinates_ratio = self._extract_coordinates(coordinates_text)
+        coordinates = {
+            "x": round(coordinates_ratio["x"] * image_width / 1000),
+            "y": round(coordinates_ratio["y"] * image_height / 1000),
+        }
+        if coordinates:
+
+            image = Image.open(image_path)
+            draw = ImageDraw.Draw(image)
+
+            # Draw a green dot at the click coordinates
+            radius = 6
+            x, y = coordinates["x"], coordinates["y"]
+            draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill="green")
+
+            # Save the modified image
+            click_screenshot_path = image_path.replace('.png', '_pixel_click.png')
+            image.save(click_screenshot_path)
+            self.logger.info(f"Grounding coordinates screenshot to: {click_screenshot_path}")
+        else:
+            self.logger.warning(f"Failed to extract coordinates from: {coordinates_text}")
+
+        return coordinates_text, coordinates
 
 class OpenaiEngine_MindAct(Engine):
     def __init__(self, **kwargs) -> None:

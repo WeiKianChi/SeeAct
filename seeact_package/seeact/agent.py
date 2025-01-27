@@ -156,7 +156,7 @@ class SeeActAgent:
         #     self.dev_logger.addHandler(handler)
         if self.config["agent"]["grounding_strategy"] == "pixel_2_stage" and grounding_model_config is None:
             grounding_model_config = self.config["openai"]
-        self.engine = engine_factory(grounding_model_config=grounding_model_config, **self.config['openai'])
+        self.engine = engine_factory(grounding_model_config=grounding_model_config, logger=self.logger, **self.config['openai'])
         self.taken_actions = []
 
         if self.config["agent"]["grounding_strategy"] == "pixel_2_stage":
@@ -499,13 +499,12 @@ Answer:""",
         if action_name == "CLICK" and selector:
             if selector == "pixel_coordinates":
                 delay = random.randint(50, 150)
-                before_content = await self.page.content()
-                await self.take_screenshot(click_coordinates=target_coordinates)
+                # before_content = await self.page.content()
                 await self.page.mouse.click(round(target_coordinates["x"]), round(target_coordinates["y"]), delay=delay)
-                after_content = await self.page.content()
-                if before_content==after_content:
-                    await target_element['selector'].click(timeout=2000)
-                    self.logger.info(f"Pixel Click Failed, Clicked on element: {element_repr}")
+                # after_content = await self.page.content()
+                # if before_content==after_content:
+                #     await target_element['selector'].click(timeout=2000)
+                #     self.logger.info(f"Pixel Click Failed, Clicked on element: {element_repr}")
             else:
                 await selector.click(timeout=2000)
                 self.logger.info(f"Clicked on element: {element_repr}")
@@ -620,46 +619,46 @@ Answer:""",
         except Exception as e:
             pass
 
-        elements = await get_interactive_elements_with_playwright(self.page,
-                                                                  self.config['browser']['viewport'])
+        # elements = await get_interactive_elements_with_playwright(self.page,
+        #                                                           self.config['browser']['viewport'])
 
-        '''
-             0: center_point =(x,y)
-             1: description
-             2: tag_with_role: tag_head with role and type # TODO: Consider adding more
-             3. box
-             4. selector
-             5. tag
-             '''
+        # '''
+        #      0: center_point =(x,y)
+        #      1: description
+        #      2: tag_with_role: tag_head with role and type # TODO: Consider adding more
+        #      3. box
+        #      4. selector
+        #      5. tag
+        #      '''
 
-        elements = sorted(elements, key=lambda el: (
-            el["center_point"][1], el["center_point"][0]))  # Sorting by y and then x coordinate
+        # elements = sorted(elements, key=lambda el: (
+        #     el["center_point"][1], el["center_point"][0]))  # Sorting by y and then x coordinate
 
-        elements = [{**x, "idx": i, "option": generate_option_name(i)} for i, x in enumerate(elements)]
+        # elements = [{**x, "idx": i, "option": generate_option_name(i)} for i, x in enumerate(elements)]
 
-        # In crawler mode, get random link and click on it
-        if self.config["basic"]["crawler_mode"] is True:
-            if self.time_step > self.config["basic"]["crawler_max_steps"]:
-                self.logger.info("Crawler reached max steps, going to stop")
-                self.complete_flag = True
-                return None
+        # # In crawler mode, get random link and click on it
+        # if self.config["basic"]["crawler_mode"] is True:
+        #     if self.time_step > self.config["basic"]["crawler_max_steps"]:
+        #         self.logger.info("Crawler reached max steps, going to stop")
+        #         self.complete_flag = True
+        #         return None
 
-            links = [x for x in elements if x['tag_with_role'] == 'a']
-            random_link = get_random_link(links)
-            while random_link in self.visited_links and len(links) > 0:
-                random_link = get_random_link(links)
-            if random_link is None:
-                return None
+        #     links = [x for x in elements if x['tag_with_role'] == 'a']
+        #     random_link = get_random_link(links)
+        #     while random_link in self.visited_links and len(links) > 0:
+        #         random_link = get_random_link(links)
+        #     if random_link is None:
+        #         return None
 
-            prediction = {"action_generation": "Random chosen link", "action_grounding": "Random chosen link",
-                          "element": random_link,
-                          "action": "CLICK", "value": 'None'}
-            self.predictions.append(prediction)
-            self.visited_links.append(random_link)
-            self.logger.info(prediction)
-            await self.take_screenshot()
-            await self.start_playwright_tracing()
-            return prediction
+        #     prediction = {"action_generation": "Random chosen link", "action_grounding": "Random chosen link",
+        #                   "element": random_link,
+        #                   "action": "CLICK", "value": 'None'}
+        #     self.predictions.append(prediction)
+        #     self.visited_links.append(random_link)
+        #     self.logger.info(prediction)
+        #     await self.take_screenshot()
+        #     await self.start_playwright_tracing()
+        #     return prediction
 
         try:
             if self.config["agent"]["grounding_strategy"] == "text_choice_som":
@@ -676,11 +675,11 @@ Answer:""",
         # Generate choices for the prompt
 
         # , self.config['basic']['default_task'], self.taken_actions
-        choices = format_choices(elements)
-        options = format_options(choices)
+        # choices = format_choices(elements)
+        # options = format_options(None)
 
         # print("\n\n",choices)
-        prompt = self.generate_prompt(task=self.tasks[-1], previous=self.taken_actions, choices=choices)
+        prompt = self.generate_prompt(task=self.tasks[-1], previous=self.taken_actions, choices=None)
         # print("\n\n",prompt)
 
         # Logging prompt for debugging
@@ -713,7 +712,7 @@ Answer:""",
         terminal_width = 10
         self.logger.info("-" * (terminal_width))
         if self.config["agent"]["grounding_strategy"] == "pixel_2_stage":
-
+            options = ""
             choice_text = f"Action Grounding ➡️" + "\n" + options
             for line in choice_text.split('\n'):
                 self.logger.info(line)
@@ -736,6 +735,7 @@ Answer:""",
                 prompt=text_prompt_for_grouding,
                 image_path=self.screenshot_path,
             )
+            self.logger.info(f"Grounding Response: {grounding_response}\n Coordinates: {pred_coordinates}")
 
             prediction = {"action_generation": output0, "action_grounding": output, "element": pred_element,
                           "action": pred_action, "value": pred_value, "coordinates": pred_coordinates,
@@ -743,6 +743,7 @@ Answer:""",
             
 
         else:
+            options = ""
             choice_text = f"Action Grounding ➡️" + "\n" + options
             choice_text = choice_text.replace("\n\n", "")
 
@@ -839,7 +840,7 @@ Answer:""",
             return 0
         except Exception as e:
 
-            new_action = f"Failed to perform {pred_action} on {pred_element['description']} with value '{pred_value}': {e}"
+            new_action = f"Failed to perform {pred_action} on {pred_element.get('description', 'element')}"
 
             traceback_info = traceback.format_exc()
             error_message = f"Error executing action {pred_action}: {str(e)}"
