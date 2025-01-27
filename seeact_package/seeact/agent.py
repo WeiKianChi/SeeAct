@@ -331,8 +331,8 @@ Answer:""",
             f_handler.setLevel(logging.INFO)
 
             # Create a console handler for printing logs to the terminal
-            c_handler = logging.StreamHandler()
-            c_handler.setLevel(logging.INFO)
+            # c_handler = logging.StreamHandler()
+            # c_handler.setLevel(logging.INFO)
 
             # Create formatters for file and console handlers
             file_formatter = logging.Formatter('%(asctime)s - %(message)s')
@@ -340,12 +340,12 @@ Answer:""",
 
             # Set formatters for file and console handlers
             f_handler.setFormatter(file_formatter)
-            c_handler.setFormatter(console_formatter)
+            # c_handler.setFormatter(console_formatter)
 
             # Add the handlers to the logger
             logger.addHandler(f_handler)
-            if not redirect_to_dev_log:  # Only add console handler if not redirecting to dev log
-                logger.addHandler(c_handler)
+            # if not redirect_to_dev_log:  # Only add console handler if not redirecting to dev log
+            #     logger.addHandler(c_handler)
 
         return logger
 
@@ -572,8 +572,10 @@ Answer:""",
             if selector == "pixel_coordinates":
                 delay = random.randint(50, 150)
                 await self.page.mouse.click(round(target_coordinates["x"]), round(target_coordinates["y"]), delay=delay)
-            await selector.press('Enter')
-            self.logger.info(f"Pressed Enter on element: {element_repr}")
+                await page.keyboard.press('Enter')
+            else:
+                await selector.press('Enter')
+                self.logger.info(f"Pressed Enter on element: {element_repr}")
         elif action_name == "PRESS ENTER":
             await page.keyboard.press('Enter')
             self.logger.info(f"Pressed Enter on element: {element_repr}")
@@ -582,6 +584,7 @@ Answer:""",
             self.logger.info(f"Selected option '{value}' from element: {element_repr}")
         elif action_name == "TERMINATE":
             self.complete_flag = True
+            self.exit_reason = "Task completed"
             self.logger.info("Task has been marked as complete. Terminating...")
         elif action_name in ["NONE"]:
             self.logger.info("No action necessary at this stage. Skipped")
@@ -668,7 +671,7 @@ Answer:""",
                 await self.page.evaluate("unmarkPage()")
                 await self.page.evaluate("""elements => {
                     return window.som.drawBoxes(elements);
-                    }""", elements)
+                    }""", None)
         except Exception as e:
             self.logger.info(f"Mark page script error {e}")
 
@@ -685,7 +688,7 @@ Answer:""",
         # Logging prompt for debugging
 
         # Capture a screenshot for the current state of the webpage, if required by the model
-        screenshot_path = os.path.join(self.main_path, 'screenshots', f'screen_{self.time_step}.png')
+        screenshot_path = os.path.join(self.main_path, 'trajectories', f'{self.time_step}_full.png')
         self.logger.info(f"Saving screenshot to: {screenshot_path}")
         try:
             await self.page.screenshot(path=screenshot_path)
@@ -738,8 +741,10 @@ Answer:""",
             self.logger.info(f"Grounding Response: {grounding_response}\n Coordinates: {pred_coordinates}")
 
             prediction = {"action_generation": output0, "action_grounding": output, "element": pred_element,
-                          "action": pred_action, "value": pred_value, "coordinates": pred_coordinates,
+                          "action": pred_action, "value": pred_value, 
+                          "coordinates": pred_coordinates,
                           "description": pred_element_label}
+            
             
 
         else:
@@ -775,6 +780,8 @@ Answer:""",
             prediction = {"action_generation": output0, "action_grounding": output, "element": pred_element,
                           "action": pred_action, "value": pred_value}
 
+
+        # prediction_json = json.dumps(prediction, indent=4)
         self.predictions.append(prediction)
 
         # return {"action_generation": output0, "action_grounding": output, "element": pred_element,
@@ -791,15 +798,18 @@ Answer:""",
 
         if prediction_dict is None:
             self.complete_flag = True
+            self.exit_reason = "No prediction"
             return
         
         if self.time_step > self.config["agent"]["max_auto_op"]:
             self.complete_flag = True
+            self.exit_reason = "Reached step limit"
             self.logger.info(f"the agent reached the step limit {self.config['agent']['max_auto_op']}")
             return
         
         if self.continuous_no_op > self.config["agent"]["max_continuous_no_op"]:
             self.complete_flag = True
+            self.exit_reason = "Reached no op limit"
             self.logger.info(f"no executable operations for  {self.config['agent']['max_continuous_no_op']} steps")
             return
 
@@ -840,7 +850,7 @@ Answer:""",
             return 0
         except Exception as e:
 
-            new_action = f"Failed to perform {pred_action} on {pred_element.get('description', 'element')}"
+            new_action = f"Failed to perform {pred_action}"
 
             traceback_info = traceback.format_exc()
             error_message = f"Error executing action {pred_action}: {str(e)}"
@@ -863,8 +873,17 @@ Answer:""",
         except Exception as e:
             self.logger.info(e)
 
-        final_json = {"task": self.tasks, "website": self.config["basic"]["default_website"],
-                      "num_step": len(self.taken_actions), "action_history": self.taken_actions}
+        final_json = {
+            "confirmed_task": self.tasks[0], 
+            "website": self.config["basic"]["default_website"],
+            "task_id": self.task_id,
+            "success_or_not": "" if self.valid_op > 0 else "0",
+            "num_step": len(self.taken_actions), 
+            "action_history": self.taken_actions,
+            "predictions": self.predictions,
+            "thoughts": [p['action_generation'] for p in self.predictions],
+            "exit_by": self.exit_reason,
+        }
 
         def locator_serializer(obj):
             """Convert non-serializable objects to a serializable format."""
@@ -959,7 +978,7 @@ Answer:""",
 
     @property
     def screenshot_path(self):
-        return os.path.join(self.main_path, 'screenshots', f'screen_{self.time_step}.png')
+        return os.path.join(self.main_path, 'trajectories', f'{self.time_step}_full.png')
 
     @property
     def trace_path(self):

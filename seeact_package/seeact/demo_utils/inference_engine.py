@@ -279,10 +279,13 @@ class OpenAIEngine(Engine):
 from openai import OpenAI
 from PIL import Image, ImageDraw
 import re
+from copy import deepcopy
 class BiOpenAIEngine(Engine):
     def __init__(self, default_model_config, grounding_model_config, logger, **kwargs) -> None:
         # super().__init__(stop, rate_limit, model, temperature, **kwargs)
         self.logger = logger
+        default_model_config = deepcopy(default_model_config)
+        grounding_model_config = deepcopy(grounding_model_config)
         self.model_names = {
             "grounding": grounding_model_config.pop("model"),
             "default": default_model_config.pop("model"),
@@ -401,7 +404,7 @@ class BiOpenAIEngine(Engine):
             draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill="green")
 
             # Save the modified image
-            click_screenshot_path = image_path.replace('.png', '_pixel_click.png')
+            click_screenshot_path = image_path.replace('_full.png', '_grounding.png')
             image.save(click_screenshot_path)
             self.logger.info(f"Grounding coordinates screenshot to: {click_screenshot_path}")
         else:
