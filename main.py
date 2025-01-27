@@ -5,22 +5,23 @@ import json
 # Setup your API Key here, or pass through environment
 os.environ["OPENAI_API_KEY"] = os.environ["WEB_LDBD_API_KEY"]
 
-TASK_FILE_PATH = "data/filtered_test_data_300.json"
+# TASK_FILE_PATH = "data/filtered_test_data_300.json"
+TASK_FILE_PATH = "data/online_tasks/sample_tasks.json"
 # CONFIG_PATH = "config/online300.toml"
-SAVE_DIR = "output/online300"
+SAVE_DIR = f"output/{TASK_FILE_PATH.split('/')[-1].split('.')[0]}"
 
 default_seeact_kwargs = {
     "grounding_strategy": "pixel_2_stage",
-    "model": "gpt-4o-mini",
+    "model": "gpt-4o",
     "temperature": 0.0,
-    "headless": True,
+    "headless": False,
     "grounding_model_config": {
-        "model": "osunlp/UGround-V1-2B",
+        "model": "osunlp/UGround-V1-7B",
         "base_url": "http://localhost:6999/v1",
         "api_key": "skdummy",
     }
 }
-
+import logging
 async def run_agent():
     
     with open(TASK_FILE_PATH, 'r', encoding='utf-8') as file:
@@ -39,7 +40,12 @@ async def run_agent():
             default_website=confirmed_website,
             **default_seeact_kwargs,
         )
-
+        
+        agent.logger.setLevel(logging.DEBUG)
+        for log_handler in agent.logger.handlers:
+            if isinstance(log_handler, logging.StreamHandler):
+                log_handler.setLevel(logging.DEBUG)
+        agent.logger.info(f"Model: {agent.engine.model_names}")
         await agent.start()
         while not agent.complete_flag:
             prediction_dict = await agent.predict()
