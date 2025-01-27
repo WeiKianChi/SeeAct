@@ -24,6 +24,8 @@ from os.path import dirname
 
 import toml
 from playwright.async_api import async_playwright, Locator
+from playwright._impl._page import Page
+
 
 from .data_utils.format_prompt_utils import get_index_from_option_name, generate_new_query_prompt, \
     generate_new_referring_prompt, format_options, generate_option_name
@@ -32,6 +34,7 @@ from .demo_utils.browser_helper import normal_launch_async, normal_new_context_a
 from .demo_utils.crawler_helper import get_random_link
 from .demo_utils.format_prompt import format_choices, postprocess_action_lmm, postprocess_action_lmm_pixel
 from .demo_utils.inference_engine import engine_factory
+from PIL import Image, ImageDraw
 
 
 class SeeActAgent:
@@ -89,7 +92,7 @@ class SeeActAgent:
                         "grounding_strategy": grounding_strategy,
                         "max_auto_op": max_auto_op,
                         "max_continuous_no_op": max_continuous_no_op,
-                        "highlight": highlight
+                        "highlight": highlight,
                     },
                     "openai": {
                         "rate_limit": rate_limit,
@@ -389,7 +392,7 @@ Answer:""",
         page.on("framenavigated", self.page_on_navigation_handler)
         page.on("close", self.page_on_close_handler)
         page.on("crash", self.page_on_crash_handler)
-        self.page = page
+        self.page: Page = page
         # Additional event listeners can be added here
         try:
             if self.config["agent"]["grounding_strategy"] == "text_choice_som":
@@ -484,19 +487,25 @@ Answer:""",
 
         if self.config["agent"]["grounding_strategy"] == "pixel_2_stage":
             selector = "pixel_coordinates"
-        if target_element is not None:
+        elif target_element is not None:
             selector = target_element['selector']
             element_repr = target_element['description']
         else:
             selector = None
 
 
-        page = self.page
+        page: Page = self.page
 
         if action_name == "CLICK" and selector:
             if selector == "pixel_coordinates":
                 delay = random.randint(50, 150)
+                before_content = await self.page.content()
+                await self.take_screenshot(click_coordinates=target_coordinates)
                 await self.page.mouse.click(round(target_coordinates["x"]), round(target_coordinates["y"]), delay=delay)
+                after_content = await self.page.content()
+                if before_content==after_content:
+                    await target_element['selector'].click(timeout=2000)
+                    self.logger.info(f"Pixel Click Failed, Clicked on element: {element_repr}")
             else:
                 await selector.click(timeout=2000)
                 self.logger.info(f"Clicked on element: {element_repr}")
@@ -597,11 +606,6 @@ Answer:""",
         # self.dev_logger.info(new_action)
         return new_action
     
-    def _extract_coordinates(self, text):
-        match = re.search(r'(\d+)[^\d]+(\d+)', text)
-        if match:
-            return {"x": int(match.group(1)), "y": int(match.group(2))}
-        return None
     
     async def predict(self):
 
@@ -718,22 +722,22 @@ Answer:""",
 
             pred_element_label, pred_action, pred_value = postprocess_action_lmm_pixel(output)
 
-            pred_element = pred_element_label
+            # pred_element = get_index_from_option_name(pred_element_label, elements)
+            pred_element = None
             # Log the prediction result
             self.logger.debug(f"Retrieved Answer")
-            self.logger.debug(f"Predicted Element: {pred_element}")
+            self.logger.debug(f"Predicted Element Description: {pred_element_label}")
             self.logger.debug(f"Action: {pred_action}")
             self.logger.debug(f"Value: {pred_value}")
 
             # Call a GUI visual grounding model to get the pixel coordinates. For example, UGround, CogAgent, SeeClick.
             text_prompt_for_grouding = self.prompts["coordinate_prompt"].format(description=pred_element_label)
-            grounding_response = self.engine.grounding_generate(
+            grounding_response, pred_coordinates = self.engine.grounding_generate(
                 prompt=text_prompt_for_grouding,
                 image_path=self.screenshot_path,
             )
-            pred_coordinates = self._extract_coordinates(grounding_response)
 
-            prediction = {"action_generation": output0, "action_grounding": output, "element": None,
+            prediction = {"action_generation": output0, "action_grounding": output, "element": pred_element,
                           "action": pred_action, "value": pred_value, "coordinates": pred_coordinates,
                           "description": pred_element_label}
             
@@ -786,6 +790,16 @@ Answer:""",
 
         if prediction_dict is None:
             self.complete_flag = True
+            return
+        
+        if self.time_step > self.config["agent"]["max_auto_op"]:
+            self.complete_flag = True
+            self.logger.info(f"the agent reached the step limit {self.config['agent']['max_auto_op']}")
+            return
+        
+        if self.continuous_no_op > self.config["agent"]["max_continuous_no_op"]:
+            self.complete_flag = True
+            self.logger.info(f"no executable operations for  {self.config['agent']['max_continuous_no_op']} steps")
             return
 
         try:
@@ -904,7 +918,7 @@ Answer:""",
 
     # decompose run to predict and execute.
 
-    async def take_screenshot(self):
+    async def take_screenshot(self):                
         try:
             await self.page.screenshot(path=self.screenshot_path)
         except Exception as e:
