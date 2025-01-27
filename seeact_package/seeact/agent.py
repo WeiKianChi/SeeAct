@@ -13,34 +13,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import logging
 import os
+import random
 import traceback
+import re
 from datetime import datetime
-import json
+from os.path import dirname
+
 import toml
-<<<<<<< HEAD
 from playwright.async_api import async_playwright, Locator
 from playwright._impl._page import Page
 
-=======
-import random
-from playwright.async_api import async_playwright,Locator
-from os.path import dirname, join as joinpath
-import asyncio
->>>>>>> b59a9a6b096fcb264690bd73c032e4d975d8b64c
 
 from .data_utils.format_prompt_utils import get_index_from_option_name, generate_new_query_prompt, \
     generate_new_referring_prompt, format_options, generate_option_name
 from .demo_utils.browser_helper import normal_launch_async, normal_new_context_async, \
     get_interactive_elements_with_playwright, select_option, saveconfig
-from .demo_utils.format_prompt import format_choices, postprocess_action_lmm
-from .demo_utils.inference_engine import engine_factory
-<<<<<<< HEAD
-from PIL import Image, ImageDraw
-=======
 from .demo_utils.crawler_helper import get_random_link
->>>>>>> b59a9a6b096fcb264690bd73c032e4d975d8b64c
+from .demo_utils.format_prompt import format_choices, postprocess_action_lmm, postprocess_action_lmm_pixel
+from .demo_utils.inference_engine import engine_factory
+from PIL import Image, ImageDraw
 
 
 class SeeActAgent:
@@ -50,7 +44,7 @@ class SeeActAgent:
                  default_task='Find the pdf of the paper "GPT-4V(ision) is a Generalist Web Agent, if Grounded"',
                  default_website="https://www.google.com/",
                  input_info=["screenshot"],
-                 grounding_strategy="text_choice_som",
+                 grounding_strategy="text_choice_som",  # [...,'pixel_2_stage']
                  crawler_mode=False,
                  crawler_max_steps=10,
                  max_auto_op=50,
@@ -74,7 +68,8 @@ class SeeActAgent:
                  },
                  rate_limit=-1,
                  model="gpt-4o",
-                 temperature=0.9
+                 temperature=0.9,
+                 grounding_model_config=None,
                  ):
 
         try:
@@ -105,7 +100,7 @@ class SeeActAgent:
                         "temperature": temperature
                     }
                 }
-            config.update({     
+            config.update({
                 "browser": {
                     "headless": headless,
                     "args": args,
@@ -159,10 +154,15 @@ class SeeActAgent:
         # # Redirect primary logger messages to dev_logger as well
         # for handler in self.logger.handlers:
         #     self.dev_logger.addHandler(handler)
-
-        self.engine = engine_factory(**self.config['openai'])
+        if self.config["agent"]["grounding_strategy"] == "pixel_2_stage" and grounding_model_config is None:
+            grounding_model_config = self.config["openai"]
+        self.engine = engine_factory(grounding_model_config=grounding_model_config, **self.config['openai'])
         self.taken_actions = []
-        self.prompts = self._initialize_prompts()
+
+        if self.config["agent"]["grounding_strategy"] == "pixel_2_stage":
+            self.prompts = self._initialize_prompts_pure_vision()
+        else:
+            self.prompts = self._initialize_prompts()
         self.time_step = 0
         self.valid_op = 0
         self.continuous_no_op = 0
@@ -238,6 +238,77 @@ ELEMENT: The uppercase letter of your choice.''',
             "action_format": action_format,  # Use the dynamically generated action_format
 
             "value_format": '''VALUE: Provide additional input based on ACTION. (If it doesn't involve a value, write "None"'''
+        }
+
+    def _initialize_prompts_pure_vision(self):
+        """Specifically for Vision-only agents"""
+
+        return {
+            "system_prompt": '''You are assisting humans doing web navigation tasks step by step. At each stage, you can see the webpage by a screenshot and know the previous actions before the current step decided by yourself that have been executed for this task through recorded history. You need to decide on the first following action to take.''',
+
+            "question_description": '''
+    The screenshot below shows the webpage you see. Think step by step before outlining the next action step at the current stage. Clearly outline which element in the webpage users will operate with as the first next target element, its detailed location, and the corresponding operation.
+
+To be successful, it is important to follow the following rules: 
+1. You should only issue a valid action given the current observation. 
+2. You should only issue one action at a time
+4. Unlike humans, for typing (e.g., in text areas, text boxes), you should try directly typing the input, bypassing the need for an initial click. 
+5. You should not attempt to create accounts, log in or do the final submission. 
+6. Terminate when you deem the task complete or if it requires potentially harmful actions.
+7. Do not generate same action as the previous one, try different ways if keep failing
+8. When there is a floating banner like ads, login, or survey floating taking more than 30% of the page, close the floating banner to proceed, the close button could look like a x on the right top corner, or choose NO THANKS to close it.
+9. When there is a floating banner on top or bottom of the page like cookie policy taking less than 30% of the page, ignore the banner to proceed.  
+10. After typing text into search or text input area, the next action is normally PRESS ENTER
+11. When there are bouding boxes in the screenshot, interact with the elements in the bounding boxes
+12. When there are multiple clickable buttons having the same value, choose the one with less obstacles in the screenshot.            
+                
+                
+    Here are the descriptions of all allowed actions:
+
+    No Value Operations:
+    - CLICK: Click on a webpage element using the mouse.
+    - HOVER: Move the mouse over a webpage element without clicking.
+    - PRESS ENTER: Press the Enter key, typically to submit a form or confirm an input.
+    - SCROLL UP: Scroll the webpage upwards by half of the window height.
+    - SCROLL DOWN: Scroll the webpage downwards by half of the window height.
+    - PRESS HOME: Scroll to the top of the webpage.
+    - PRESS END: Scroll to the bottom of the webpage.
+    - PRESS PAGEUP: Scroll up by one window height.
+    - PRESS PAGEDOWN: Scroll down by one window height.
+    - CLOSE TAB: Close the current tab in the browser.
+    - NEW TAB: Open a new tab in the browser.
+    - GO BACK: Navigate to the previous page in the browser history.
+    - GO FORWARD: Navigate to the next page in the browser history.
+    - TERMINATE: End the current task, typically used when the task is considered complete or requires potentially harmful actions.
+    - NONE: Indicates that no action is necessary at this stage. Used to skip an action or wait.
+
+    With Value Operations:
+    - TYPE: Enter text into a text area or text box. The value is the text to be typed.
+    - GOTO: Navigate to a specific URL. The value is the URL to navigate to.
+    - SAY: Output answers or other information you want to tell the user.
+    - MEMORIZE: Keep some content into action history to memorize it.
+    
+    Finally, conclude your answer using the format below. Ensure your answer is strictly adhering to the format provided below. Please do not leave any explanation in your answers of the final standardized format part, and this final part should be clear and certain. The element choice, action, and value should be in three separate lines.
+    
+    Format:
+
+    ELEMENT: The description about the exact location to help locating the exact position to operate at. Required for click and type.
+    
+    ACTION: Choose an action from allowed actions.
+                
+    VALUE: Provide additional input based on ACTION. (If it doesn't involve a value, write "None"            
+                
+    ''',
+    "coordinate_prompt": f"""
+Your task is to help the user identify the precise coordinates (x, y) of a specific area/element/object on the screen based on a description.
+
+- Your response should aim to point to the center or a representative point within the described area/element/object as accurately as possible.
+- If the description is unclear or ambiguous, infer the most relevant area or element based on its likely context or purpose.
+- Your answer should be a single string (x, y) corresponding to the point of the interest.
+
+Description: {{description}}
+
+Answer:""",
         }
 
     def update_action_space(self, new_actions):
@@ -324,7 +395,7 @@ ELEMENT: The uppercase letter of your choice.''',
         self.page: Page = page
         # Additional event listeners can be added here
         try:
-            if self.config["agent"]["grounding_strategy"] == "text_choice_som": 
+            if self.config["agent"]["grounding_strategy"] == "text_choice_som":
                 with open(os.path.join(dirname(__file__), "mark_page.js")) as f:
                     mark_page_script = f.read()
                 await self.session_control['active_page'].evaluate(mark_page_script)
@@ -344,7 +415,7 @@ ELEMENT: The uppercase letter of your choice.''',
 
         self.session_control['context'].on("page", self.page_on_open_handler)
         await self.session_control['context'].new_page()
-        
+
         if self.config["basic"]["crawler_mode"] is True:
             await self.session_control['context'].tracing.start(screenshots=True, snapshots=True)
 
@@ -374,46 +445,54 @@ ELEMENT: The uppercase letter of your choice.''',
         # assert task is not None, "Please input the task."
 
         prompt_list = []
+        if self.config["agent"]["grounding_strategy"] == "pixel_2_stage":
+            system_prompt_input = self.prompts["system_prompt"]
+            question_description_input = self.prompts["question_description"]
+            previous_ = self.taken_actions if self.taken_actions else None
+            prompt_list.extend(
+                generate_new_query_prompt(system_prompt=system_prompt_input,
+                                          task=self.tasks[-1], previous_actions=previous_,
+                                          question_description=question_description_input))
+            return prompt_list
+        else:
 
-        system_prompt_input = self.prompts["system_prompt"]
-        action_space_input = self.prompts["action_space"]
-        question_description_input = self.prompts["question_description"]
-        referring_input = self.prompts["referring_description"]
-        element_format_input = self.prompts["element_format"]
-        action_format_input = self.prompts["action_format"]
-        value_format_input = self.prompts["value_format"]
+            system_prompt_input = self.prompts["system_prompt"]
+            action_space_input = self.prompts["action_space"]
+            question_description_input = self.prompts["question_description"]
+            referring_input = self.prompts["referring_description"]
+            element_format_input = self.prompts["element_format"]
+            action_format_input = self.prompts["action_format"]
+            value_format_input = self.prompts["value_format"]
 
-        # print(previous)
+            # print(previous)
 
-        previous_ = self.taken_actions if self.taken_actions else None
+            previous_ = self.taken_actions if self.taken_actions else None
 
-        # print(previous_)
+            # print(previous_)
 
-        prompt_list.extend(
-            generate_new_query_prompt(system_prompt=system_prompt_input + "\n" + action_space_input,
-                                      task=self.tasks[-1], previous_actions=previous_,
-                                      question_description=question_description_input))
-        prompt_list.append(
-            generate_new_referring_prompt(referring_description=referring_input, element_format=element_format_input,
-                                          action_format=action_format_input, value_format=value_format_input,
-                                          choices=choices))
+            prompt_list.extend(
+                generate_new_query_prompt(system_prompt=system_prompt_input + "\n" + action_space_input,
+                                          task=self.tasks[-1], previous_actions=previous_,
+                                          question_description=question_description_input))
+            prompt_list.append(
+                generate_new_referring_prompt(referring_description=referring_input,
+                                              element_format=element_format_input,
+                                              action_format=action_format_input, value_format=value_format_input,
+                                              choices=choices))
 
-        return prompt_list
+            return prompt_list
 
-<<<<<<< HEAD
+    async def perform_action(self, target_element=None, action_name=None, value=None, target_coordinates=None,
+                             element_repr=None):
+
         if self.config["agent"]["grounding_strategy"] == "pixel_2_stage":
             selector = "pixel_coordinates"
         elif target_element is not None:
-=======
-    async def perform_action(self, target_element=None, action_name=None, value=None, element_repr=""):
-        if target_element is not None:
->>>>>>> b59a9a6b096fcb264690bd73c032e4d975d8b64c
             selector = target_element['selector']
-            element_repr =target_element['description']
+            element_repr = target_element['description']
         else:
             selector = None
 
-<<<<<<< HEAD
 
         page: Page = self.page
 
@@ -439,22 +518,23 @@ ELEMENT: The uppercase letter of your choice.''',
                 await selector.hover(timeout=2000)
                 self.logger.info(f"Hovered over element: {element_repr}")
 
-=======
-        page = self.page
-
->>>>>>> b59a9a6b096fcb264690bd73c032e4d975d8b64c
 
 
-        if action_name == "CLICK" and selector:
-            await selector.click(timeout=2000)
-            self.logger.info(f"Clicked on element: {element_repr}")
-        elif action_name == "HOVER" and selector:
-            await selector.hover(timeout=2000)
-            self.logger.info(f"Hovered over element: {element_repr}")
         elif action_name == "TYPE" and selector:
-            await selector.fill(value)
-            await selector.fill(value)
-            self.logger.info(f"Typed '{value}' into element: {element_repr}")
+
+            if selector == "pixel_coordinates":
+                delay = random.randint(50, 150)
+                await self.page.mouse.click(round(target_coordinates["x"]), round(target_coordinates["y"]), delay=delay)
+
+                await self.page.keyboard.press("Control+A")
+                await self.page.keyboard.press("Backspace")
+                # value = stringfy_value(action['fill_text'])
+                await self.page.keyboard.type(value)
+            else:
+                await selector.fill(value)
+                await selector.fill(value)
+                self.logger.info(f"Typed '{value}' into element: {element_repr}")
+
         elif action_name == "SCROLL UP":
             await page.evaluate(f"window.scrollBy(0, -{self.config['browser']['viewport']['height'] // 2});")
             self.logger.info("Scrolled up")
@@ -490,6 +570,9 @@ ELEMENT: The uppercase letter of your choice.''',
             await page.goto(value, wait_until="load")
             self.logger.info(f"Navigated to {value}")
         elif action_name == "PRESS ENTER" and selector:
+            if selector == "pixel_coordinates":
+                delay = random.randint(50, 150)
+                await self.page.mouse.click(round(target_coordinates["x"]), round(target_coordinates["y"]), delay=delay)
             await selector.press('Enter')
             self.logger.info(f"Pressed Enter on element: {element_repr}")
         elif action_name == "PRESS ENTER":
@@ -512,19 +595,18 @@ ELEMENT: The uppercase letter of your choice.''',
         if action_name in self.no_element_op and target_element is None:
             new_action = action_name
         else:
-            new_action = "[" + target_element['tag_with_role'] + "]" + " "
-            new_action += target_element['description'] + " -> " + action_name
+            if selector == "pixel_coordinates":
+                new_action = element_repr + " -> " + action_name
+            else:
+                new_action = "[" + target_element['tag_with_role'] + "]" + " "
+                new_action += target_element['description'] + " -> " + action_name
         if action_name in self.with_value_op:
             new_action += ": " + value
 
         # self.dev_logger.info(new_action)
         return new_action
-<<<<<<< HEAD
     
     
-=======
-
->>>>>>> b59a9a6b096fcb264690bd73c032e4d975d8b64c
     async def predict(self):
 
         """
@@ -537,7 +619,6 @@ ELEMENT: The uppercase letter of your choice.''',
             await self.session_control["active_page"].wait_for_load_state('load')
         except Exception as e:
             pass
-
 
         elements = await get_interactive_elements_with_playwright(self.page,
                                                                   self.config['browser']['viewport'])
@@ -554,8 +635,7 @@ ELEMENT: The uppercase letter of your choice.''',
         elements = sorted(elements, key=lambda el: (
             el["center_point"][1], el["center_point"][0]))  # Sorting by y and then x coordinate
 
-
-        elements = [{**x, "idx": i, "option": generate_option_name(i)} for i,x in enumerate(elements)]
+        elements = [{**x, "idx": i, "option": generate_option_name(i)} for i, x in enumerate(elements)]
 
         # In crawler mode, get random link and click on it
         if self.config["basic"]["crawler_mode"] is True:
@@ -563,25 +643,26 @@ ELEMENT: The uppercase letter of your choice.''',
                 self.logger.info("Crawler reached max steps, going to stop")
                 self.complete_flag = True
                 return None
-            
-            links = [x for x in elements if x['tag_with_role'] == 'a'] 
+
+            links = [x for x in elements if x['tag_with_role'] == 'a']
             random_link = get_random_link(links)
             while random_link in self.visited_links and len(links) > 0:
                 random_link = get_random_link(links)
             if random_link is None:
                 return None
 
-            prediction = {"action_generation": "Random chosen link", "action_grounding": "Random chosen link", "element": random_link,
-                    "action": "CLICK", "value": 'None'}
+            prediction = {"action_generation": "Random chosen link", "action_grounding": "Random chosen link",
+                          "element": random_link,
+                          "action": "CLICK", "value": 'None'}
             self.predictions.append(prediction)
             self.visited_links.append(random_link)
             self.logger.info(prediction)
             await self.take_screenshot()
-            await self.start_playwright_tracing()         
+            await self.start_playwright_tracing()
             return prediction
 
         try:
-            if self.config["agent"]["grounding_strategy"] == "text_choice_som": 
+            if self.config["agent"]["grounding_strategy"] == "text_choice_som":
                 with open(os.path.join(dirname(__file__), "mark_page.js")) as f:
                     mark_page_script = f.read()
                 await self.page.evaluate(mark_page_script)
@@ -606,16 +687,16 @@ ELEMENT: The uppercase letter of your choice.''',
 
         # Capture a screenshot for the current state of the webpage, if required by the model
         screenshot_path = os.path.join(self.main_path, 'screenshots', f'screen_{self.time_step}.png')
-        self.logger.info(screenshot_path)
-        try:                      
+        self.logger.info(f"Saving screenshot to: {screenshot_path}")
+        try:
             await self.page.screenshot(path=screenshot_path)
         except Exception as e:
             self.logger.info(f"Failed to take screenshot: {e}")
 
         terminal_width = 10
-        self.logger.info(f"Step - {self.time_step}\n{'-'*terminal_width}\nAction Generation ➡️")
+        self.logger.info(f"Step - {self.time_step}\n{'-' * terminal_width}\nAction Generation ➡️")
         # for prompt_part in prompt:
-        self.logger.info("TASK: "+self.tasks[-1])
+        self.logger.info("TASK: " + self.tasks[-1])
         self.logger.info("Previous:")
         for action in self.taken_actions:
             self.logger.info(action)
@@ -631,11 +712,14 @@ ELEMENT: The uppercase letter of your choice.''',
 
         terminal_width = 10
         self.logger.info("-" * (terminal_width))
+        if self.config["agent"]["grounding_strategy"] == "pixel_2_stage":
 
-        choice_text = f"Action Grounding ➡️" + "\n" + options
-        choice_text = choice_text.replace("\n\n", "")
+            choice_text = f"Action Grounding ➡️" + "\n" + options
+            for line in choice_text.split('\n'):
+                self.logger.info(line)
 
-<<<<<<< HEAD
+            output = output0
+
             pred_element_label, pred_action, pred_value = postprocess_action_lmm_pixel(output)
 
             # pred_element = get_index_from_option_name(pred_element_label, elements)
@@ -657,40 +741,45 @@ ELEMENT: The uppercase letter of your choice.''',
                           "action": pred_action, "value": pred_value, "coordinates": pred_coordinates,
                           "description": pred_element_label}
             
-=======
-        for line in choice_text.split('\n'):
-            self.logger.info(line)
 
-        output = self.engine.generate(prompt=prompt, image_path=self.screenshot_path, turn_number=1,
-                                             ouput_0=output0)
-        self.logger.info("🤖 Action Grounding Output 🤖")
-        for line in output.split('\n'):
-            self.logger.info(line)
-
-        pred_element_label, pred_action, pred_value = postprocess_action_lmm(output)
->>>>>>> b59a9a6b096fcb264690bd73c032e4d975d8b64c
-
-        if len(pred_element_label) in [1, 2]:
-            element_id = get_index_from_option_name(pred_element_label)
         else:
-            element_id = None
-        if element_id is not None and element_id < len(elements):
-            pred_element = elements[element_id]
-        else:
-            pred_element = None
-        # Log the prediction result
-        self.logger.debug(f"Retrieved Answer")
-        self.logger.debug(f"Predicted Element: {pred_element}")
-        self.logger.debug(f"Action: {pred_action}")
-        self.logger.debug(f"Value: {pred_value}")
+            choice_text = f"Action Grounding ➡️" + "\n" + options
+            choice_text = choice_text.replace("\n\n", "")
 
-        prediction = {"action_generation": output0, "action_grounding": output, "element": pred_element,
-                "action": pred_action, "value": pred_value}
+            for line in choice_text.split('\n'):
+                self.logger.info(line)
+
+            output = self.engine.generate(prompt=prompt, image_path=self.screenshot_path, turn_number=1,
+                                          ouput_0=output0)
+            self.logger.info("🤖 Action Grounding Output 🤖")
+            for line in output.split('\n'):
+                self.logger.info(line)
+
+            pred_element_label, pred_action, pred_value = postprocess_action_lmm(output)
+
+            if len(pred_element_label) in [1, 2]:
+                element_id = get_index_from_option_name(pred_element_label)
+            else:
+                element_id = None
+            if element_id is not None and element_id < len(elements):
+                pred_element = elements[element_id]
+            else:
+                pred_element = None
+            # Log the prediction result
+            self.logger.debug(f"Retrieved Answer")
+            self.logger.debug(f"Predicted Element: {pred_element}")
+            self.logger.debug(f"Action: {pred_action}")
+            self.logger.debug(f"Value: {pred_value}")
+
+            prediction = {"action_generation": output0, "action_grounding": output, "element": pred_element,
+                          "action": pred_action, "value": pred_value}
 
         self.predictions.append(prediction)
 
-        return {"action_generation": output0, "action_grounding": output, "element": pred_element,
-                "action": pred_action, "value": pred_value}
+        # return {"action_generation": output0, "action_grounding": output, "element": pred_element,
+        #         "action": pred_action, "value": pred_value}
+
+        return prediction
 
         # return output0,output,pred_element, pred_action, pred_value
 
@@ -723,13 +812,20 @@ ELEMENT: The uppercase letter of your choice.''',
         pred_element = prediction_dict["element"]
         pred_action = prediction_dict["action"]
         pred_value = prediction_dict["value"]
+        pred_coordinate = None
+        pred_element_description=None
+        if "description" in prediction_dict:
+            pred_element_description=prediction_dict["description"]
+        if self.config["agent"]["grounding_strategy"] == "pixel_2_stage":
+            pred_coordinate = prediction_dict["coordinates"]
+
         try:
             if (pred_action not in self.no_element_op) and pred_element == None:
                 # self.dev_logger.info
                 self.logger.info("DEBUG: WHAT IS PRED ACTION???:" + pred_action)
                 # self.dev_logger.info("DEBUG WHAT IS self.no_element_op???:"+ self.no_element_op)
-                pred_action = "NONE"
-            new_action = await self.perform_action(pred_element, pred_action, pred_value)
+                # pred_action = "NONE"
+            new_action = await self.perform_action(pred_element, pred_action, pred_value, pred_coordinate,pred_element_description)
             self.taken_actions.append(new_action)
             if pred_action != "NONE":
                 self.valid_op += 1
@@ -744,7 +840,6 @@ ELEMENT: The uppercase letter of your choice.''',
         except Exception as e:
 
             new_action = f"Failed to perform {pred_action} on {pred_element['description']} with value '{pred_value}': {e}"
-
 
             traceback_info = traceback.format_exc()
             error_message = f"Error executing action {pred_action}: {str(e)}"
@@ -780,7 +875,6 @@ ELEMENT: The uppercase letter of your choice.''',
         # Using the custom default function in json.dump
         with open(os.path.join(self.main_path, 'all_predictions.json'), 'w', encoding='utf-8') as f:
             json.dump(self.predictions, f, default=locator_serializer, indent=4)
-
 
         with open(os.path.join(self.main_path, 'result.json'), 'w', encoding='utf-8') as file:
             json.dump(final_json, file, indent=4)
@@ -824,22 +918,17 @@ ELEMENT: The uppercase letter of your choice.''',
 
     # decompose run to predict and execute.
 
-<<<<<<< HEAD
     async def take_screenshot(self):                
         try:
-=======
-    async def take_screenshot(self):
-        try:                      
->>>>>>> b59a9a6b096fcb264690bd73c032e4d975d8b64c
             await self.page.screenshot(path=self.screenshot_path)
         except Exception as e:
             self.logger.info(f"Failed to take screenshot: {e}")
 
     async def start_playwright_tracing(self):
         await self.session_control['context'].tracing.start_chunk(
-            title=f'Step-{self.time_step}', 
+            title=f'Step-{self.time_step}',
             name=f"{self.time_step}"
-            )
+        )
 
     async def stop_playwright_tracing(self):
         await self.session_control['context'].tracing.stop_chunk(path=self.trace_path)
@@ -850,7 +939,7 @@ ELEMENT: The uppercase letter of your choice.''',
         os.makedirs(os.path.join(self.main_path, 'dom'), exist_ok=True)
         with open(self.dom_tree_path, 'w', encoding='utf-8') as f:
             f.write(dom_tree)
-        
+
         # Capture the Accessibility Tree
         accessibility_tree = await self.page.accessibility.snapshot()
         os.makedirs(os.path.join(self.main_path, 'accessibility'), exist_ok=True)
@@ -862,10 +951,10 @@ ELEMENT: The uppercase letter of your choice.''',
         if self._page is None:
             self._page = self.session_control['active_page']
         return self._page
-    
+
     @page.setter
     def page(self, value):
-        self._page = value    
+        self._page = value
 
     @property
     def screenshot_path(self):
@@ -873,12 +962,12 @@ ELEMENT: The uppercase letter of your choice.''',
 
     @property
     def trace_path(self):
-        return os.path.join(self.main_path, 'playwright_traces', f'{self.time_step}.zip')    
+        return os.path.join(self.main_path, 'playwright_traces', f'{self.time_step}.zip')
 
     @property
     def dom_tree_path(self):
-        return os.path.join(self.main_path, 'dom', f'{self.time_step}.html')    
-    
+        return os.path.join(self.main_path, 'dom', f'{self.time_step}.html')
+
     @property
     def accessibility_tree_path(self):
-        return os.path.join(self.main_path, 'accessibility', f'{self.time_step}.json')    
+        return os.path.join(self.main_path, 'accessibility', f'{self.time_step}.json')
