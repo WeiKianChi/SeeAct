@@ -405,6 +405,9 @@ class BiOpenAIEngine(Engine):
 
             # Save the modified image
             click_screenshot_path = image_path.replace('_full.png', '_grounding.png')
+            grounding_dir = os.path.join(os.path.dirname(click_screenshot_path), "..", "grounding")
+            os.makedirs(grounding_dir, exist_ok=True)
+            click_screenshot_path = os.path.join(grounding_dir, os.path.basename(click_screenshot_path))
             image.save(click_screenshot_path)
             self.logger.info(f"Grounding coordinates screenshot to: {click_screenshot_path}")
         else:
