@@ -23,6 +23,7 @@ from datetime import datetime
 from os.path import dirname
 
 import toml
+import base64
 from playwright.async_api import async_playwright, Locator
 from playwright._impl._page import Page
 
@@ -691,7 +692,8 @@ Answer:""",
         screenshot_path = os.path.join(self.main_path, 'trajectories', f'{self.time_step}_full.png')
         self.logger.info(f"Saving screenshot to: {screenshot_path}")
         try:
-            await self.page.screenshot(path=screenshot_path)
+            # await self.page.screenshot(path=screenshot_path, timeout=1000000)
+            await self.take_screenshot(self.page, screenshot_path)
         except Exception as e:
             self.logger.info(f"Failed to take screenshot: {e}")
 
@@ -938,9 +940,14 @@ Answer:""",
 
     # decompose run to predict and execute.
 
-    async def take_screenshot(self):                
+    async def take_screenshot(self, page: Page, screenshot_path):    
+        client = await page.context.new_cdp_session(page)
+        result = await client.send('Page.captureScreenshot', {'format': 'jpeg', 'quality': 100})
+        screenshot_base64 = result['data']            
         try:
-            await self.page.screenshot(path=self.screenshot_path)
+            # await self.page.screenshot(path=self.screenshot_path, timeout=1000000)
+            with open(screenshot_path, 'wb') as f:
+                f.write(base64.b64decode(screenshot_base64))
         except Exception as e:
             self.logger.info(f"Failed to take screenshot: {e}")
 
