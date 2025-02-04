@@ -381,6 +381,32 @@ async def select_option(selector, value):
     await selector.select_option(index=best_option[0], timeout=10000)
     return remove_extra_eol(best_option[1]).strip()
 
+async def get_selectors_with_playwright(page,viewport_size):
+    selector = "select"
+    tasks = []
+    seen_elements = set()
+    locator = page.locator(selector)
+    element_count = await locator.count()
+    for index in range(element_count):
+        element = locator.nth(index)
+        tag_name = selector
+        task = get_element_data(element, tag_name, viewport_size, seen_elements)
+        tasks.append(task)
+
+    results = await asyncio.gather(*tasks)
+
+    interactive_elements = []
+    for i in results:
+        if i:
+            if i["center_point"] in seen_elements:
+                continue
+            else:
+                seen_elements.add(i["center_point"])
+                interactive_elements.append(i)
+
+    return interactive_elements
+    
+
 
 def saveconfig(config, save_file):
     """
