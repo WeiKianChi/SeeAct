@@ -302,18 +302,25 @@ class BiOpenAIEngine(Engine):
         return 
 
     def generate(self, prompt: list = None, max_new_tokens=4096, temperature=None, model=None, image_path=None,
-                 ouput_0=None, turn_number=0, **kwargs):
+                 ouput_0=None, turn_number=0, text_only=False, **kwargs):
         
         # prompt0, prompt1, prompt2 = prompt
         client = self.clients["default"]
         model_name = self.model_names["default"]
-        base64_image = encode_image(image_path)
+        if not text_only:
+            base64_image = encode_image(image_path)
 
         kwargs.update({
             "max_tokens": max_new_tokens if max_new_tokens else 4096,
             "temperature": temperature if temperature else self.temperature,
         })
-
+        if text_only:
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=[{"role": "user", "content": prompt}],
+                **kwargs,
+            )
+            return response.choices[0].message.content
         if turn_number == 0:
             # Assume one turn dialogue
             prompt0, prompt1 = prompt
@@ -389,31 +396,15 @@ class BiOpenAIEngine(Engine):
         coordinates_text = response.choices[0].message.content
 
         coordinates_ratio = self._extract_coordinates(coordinates_text)
-        coordinates = {
-            "x": round(coordinates_ratio["x"] * image_width / 1000),
-            "y": round(coordinates_ratio["y"] * image_height / 1000),
+        normalized_coordinates = {
+            "x": coordinates_ratio["x"]  / 1000,
+            "y": coordinates_ratio["y"]  / 1000,
         }
-        if coordinates:
-
-            image = Image.open(image_path)
-            draw = ImageDraw.Draw(image)
-
-            # Draw a green dot at the click coordinates
-            radius = 6
-            x, y = coordinates["x"], coordinates["y"]
-            draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill="green")
-
-            # Save the modified image
-            click_screenshot_path = image_path.replace('_full.png', '_grounding.png')
-            grounding_dir = os.path.join(os.path.dirname(click_screenshot_path), "..", "grounding")
-            os.makedirs(grounding_dir, exist_ok=True)
-            click_screenshot_path = os.path.join(grounding_dir, os.path.basename(click_screenshot_path))
-            image.save(click_screenshot_path)
-            self.logger.info(f"Grounding coordinates screenshot to: {click_screenshot_path}")
-        else:
+        
+        if normalized_coordinates is None:
             self.logger.warning(f"Failed to extract coordinates from: {coordinates_text}")
 
-        return coordinates_text, coordinates
+        return coordinates_text, normalized_coordinates
 
 class OpenaiEngine_MindAct(Engine):
     def __init__(self, **kwargs) -> None:
