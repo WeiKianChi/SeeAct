@@ -39,6 +39,12 @@ from PIL import Image, ImageDraw
 import io
 import difflib
 
+def locator_serializer(obj):
+    """Convert non-serializable objects to a serializable format."""
+    if isinstance(obj, Locator):
+        # Assuming Locator has attributes 'frame' and 'selector' you want to serialize
+        return str(obj)
+    raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
 
 class SeeActAgent:
     def __init__(self,
@@ -168,6 +174,7 @@ class SeeActAgent:
         self.valid_op = 0
         self.continuous_no_op = 0
         self.predictions = []
+        self.thoughts=[]
         self.visited_links = []
         self._page = None
 
@@ -467,7 +474,10 @@ Option:
 
             if selector == "pixel_coordinates":
                 delay = random.randint(50, 150)
-                await self.page.mouse.hover(round(target_coordinates["x"]), round(target_coordinates["y"]), delay=delay)
+                await self.take_clicking_screenshot(self.page, target_coordinates)
+                width, height = self.config['browser']['viewport']['width'], self.config['browser']['viewport']['height']
+                x, y = target_coordinates["x"] * width, target_coordinates["y"] * height
+                await self.page.mouse.hover(round(x), round(y), delay=delay)
             else:
                 await selector.hover(timeout=2000)
                 self.logger.info(f"Hovered over element: {element_repr}")
@@ -478,7 +488,10 @@ Option:
 
             if selector == "pixel_coordinates":
                 delay = random.randint(50, 150)
-                await self.page.mouse.click(round(target_coordinates["x"]), round(target_coordinates["y"]), delay=delay)
+                await self.take_clicking_screenshot(self.page, target_coordinates)
+                width, height = self.config['browser']['viewport']['width'], self.config['browser']['viewport']['height']
+                x, y = target_coordinates["x"] * width, target_coordinates["y"] * height
+                await self.page.mouse.click(round(x), round(y), delay=delay)
 
                 await self.page.keyboard.press("Control+A")
                 await self.page.keyboard.press("Backspace")
@@ -526,7 +539,10 @@ Option:
         elif action_name == "PRESS ENTER" and selector:
             if selector == "pixel_coordinates":
                 delay = random.randint(50, 150)
-                await self.page.mouse.click(round(target_coordinates["x"]), round(target_coordinates["y"]), delay=delay)
+                await self.take_clicking_screenshot(self.page, target_coordinates)
+                width, height = self.config['browser']['viewport']['width'], self.config['browser']['viewport']['height']
+                x, y = target_coordinates["x"] * width, target_coordinates["y"] * height
+                await self.page.mouse.click(round(x), round(y), delay=delay)
                 await page.keyboard.press('Enter')
             else:
                 await selector.press('Enter')
@@ -541,7 +557,7 @@ Option:
             self.complete_flag = True
             self.exit_reason = "Task completed"
             self.logger.info("Task has been marked as complete. Terminating...")
-        elif action_name in ["NONE"]:
+        elif action_name.upper() in ["NONE"]:
             self.logger.info("No action necessary at this stage. Skipped")
         elif action_name in ["SAY"]:
             self.logger.info(f"Say {value} to the user")
@@ -617,8 +633,8 @@ Option:
         # options = format_options(None)
 
         # print("\n\n",choices)
-        available_selectors = await get_selectors_with_playwright(self.page, viewport_size=self.config['browser']['viewport'])
-        prompt = self.generate_prompt(task=self.tasks[-1], previous=self.taken_actions, choices=available_selectors)
+        # available_selectors = await get_selectors_with_playwright(self.page, viewport_size=self.config['browser']['viewport'])
+        prompt = self.generate_prompt(task=self.tasks[-1], previous=self.taken_actions)
         # print("\n\n",prompt)
 
         # Logging prompt for debugging
@@ -628,7 +644,7 @@ Option:
         self.logger.info(f"Saving screenshot to: {screenshot_path}")
         try:
             await self.page.screenshot(path=screenshot_path, timeout=1000000)
-            await self.take_screenshot(self.page, screenshot_path)
+            # await self.take_screenshot(self.page, screenshot_path)
         except Exception as e:
             self.logger.info(f"Failed to take screenshot: {e}")
 
@@ -689,10 +705,10 @@ Option:
                 self.logger.debug(f"Value: {opt}")
 
                 prediction = {"action_generation": output0, "action_grounding": response, 
-                            "element": selector,
-                                "action": "SELECT", "value": opt}
-                self.predictions.append(prediction)
-                
+                            "element": selector, "action": "SELECT", "value": opt}
+                prediction_json = json.dumps(prediction, indent=4, default=locator_serializer)
+                self.predictions.append(prediction_json)
+                self.thoughts.append(output0)
                 return prediction
             else:
                 self.logger.debug(f"Failed to predict SELECT action, move back to pixel grounding")
@@ -754,7 +770,8 @@ Option:
 
 
         # prediction_json = json.dumps(prediction, indent=4)
-        self.predictions.append(prediction)
+        self.predictions.append(json.dumps(prediction, indent=4))
+        self.thoughts.append(output0)
 
         # return {"action_generation": output0, "action_grounding": output, "element": pred_element,
         #         "action": pred_action, "value": pred_value}
@@ -867,7 +884,6 @@ Option:
             self.logger.info("Browser context closed.")
         except Exception as e:
             self.logger.info(e)
-
         final_json = {
             "confirmed_task": self.tasks[0], 
             "website": self.config["basic"]["default_website"],
@@ -876,16 +892,11 @@ Option:
             "num_step": len(self.taken_actions), 
             "action_history": self.taken_actions,
             "predictions": self.predictions,
-            "thoughts": [p['action_generation'] for p in self.predictions],
+            "thoughts": self.thoughts,
             "exit_by": self.exit_reason,
         }
 
-        def locator_serializer(obj):
-            """Convert non-serializable objects to a serializable format."""
-            if isinstance(obj, Locator):
-                # Assuming Locator has attributes 'frame' and 'selector' you want to serialize
-                return str(obj)
-            raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
+        
 
         # Using the custom default function in json.dump
         with open(os.path.join(self.main_path, 'all_predictions.json'), 'w', encoding='utf-8') as f:
@@ -933,16 +944,16 @@ Option:
 
     # decompose run to predict and execute.
 
-    async def take_screenshot(self, page: Page, screenshot_path):    
-        client = await page.context.new_cdp_session(page)
-        result = await client.send('Page.captureScreenshot', {'format': 'jpeg', 'quality': 100})
-        screenshot_base64 = result['data']            
-        try:
-            # await self.page.screenshot(path=self.screenshot_path, timeout=1000000)
-            with open(screenshot_path, 'wb') as f:
-                f.write(base64.b64decode(screenshot_base64))
-        except Exception as e:
-            self.logger.info(f"Failed to take screenshot: {e}")
+    # async def take_screenshot(self, page: Page, screenshot_path):    
+    #     client = await page.context.new_cdp_session(page)
+    #     result = await client.send('Page.captureScreenshot', {'format': 'jpeg', 'quality': 100})
+    #     screenshot_base64 = result['data']            
+    #     try:
+    #         # await self.page.screenshot(path=self.screenshot_path, timeout=1000000)
+    #         with open(screenshot_path, 'wb') as f:
+    #             f.write(base64.b64decode(screenshot_base64))
+    #     except Exception as e:
+    #         self.logger.info(f"Failed to take screenshot: {e}")
 
     async def start_playwright_tracing(self):
         await self.session_control['context'].tracing.start_chunk(
