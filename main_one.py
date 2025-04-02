@@ -8,8 +8,9 @@ from tqdm import tqdm
 # Setup your API Key here, or pass through environment
 
 # TASK_FILE_PATH = "data/filtered_test_data_300.json"
-TASK_FILE_PATH = "data/selected_tasks_150.json"
-SAVE_DIR = f"output/selected_tasks_150_debug"
+TASK_FILE_PATH = "data/FINAL_selected_tasks_300.json"
+SAVE_DIR = f"output/0223"
+OLD_SAVE_DIR = f"auto_eval/results/uground"
 
 default_seeact_kwargs = {
     "grounding_strategy": "pixel_2_stage",
@@ -20,8 +21,8 @@ default_seeact_kwargs = {
     "headless": False,
     "grounding_model_config": {
         "model": "osunlp/UGround-V1-7B",
-        # "base_url": "http://a0024:6999/v1",
-        "base_url": "http://localhost:6999/v1",
+        "base_url": "http://a0023:6999/v1",
+        # "base_url": "http://localhost:6999/v1",
         "api_key": "skdummy",
     }
 }
@@ -34,19 +35,27 @@ async def run_agent(single_query_task, force_restart=False):
     confirmed_task = single_query_task["confirmed_task"]
     confirmed_website = single_query_task["website"]
     task_id = single_query_task["task_id"]
+    print(f"Task ID: {task_id}")
     save_file_dir = os.path.join(SAVE_DIR, task_id)
 
     # glob every subfolder in the save_file_dir
-    if os.path.exists(save_file_dir) and not force_restart:
-        is_completed = False
-        file_names = ['all_predictions.json', 'config.toml', 'result.json', 'trajectories']
-        for subfolder in os.listdir(save_file_dir):
-            if all([os.path.exists(os.path.join(save_file_dir, subfolder, file_name)) for file_name in file_names]):
-                is_completed = True
-                print(f"Task {task_id} already completed")
-                break
-        if is_completed:
-            return
+    old_save_file_dir = os.path.join(OLD_SAVE_DIR, task_id)
+    if os.path.exists(old_save_file_dir) and not force_restart:
+        result_path = os.path.join(old_save_file_dir, "result.json")
+        if os.path.exists(result_path):
+            with open(result_path, 'r', encoding='utf-8') as file:
+                result = json.load(file)
+                task_in_result = result["confirmed_task"]
+                if task_in_result == confirmed_task:
+                    print(f"Task {task_id} already completed.")
+                    return
+                else:
+                    print(f"Task {task_id} already exists but with different task {task_in_result}.")
+        else:
+            print(f"Task {task_id} folder already exists but without result.")
+    else:
+        print(f"Task {task_id} not exists.")
+
     # os.makedirs(main_result_path, exist_ok=True)
     seeact_kwargs = default_seeact_kwargs.copy()
     agent = SeeActAgent(
